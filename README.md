@@ -113,11 +113,8 @@ vless-vpn-bot/
 
 
 ```
-
 ## 📱 VLESS ключ
-
 Бот генерирует VLESS ключи в формате:
-```
 vless://[uuid]@[server]:[port]?type=tcp&security=reality&pbk=[key]&fp=chrome&sni=yahoo.com&sid=c8&spx=/&flow=xtls-rprx-vision#[name]
 ```
 
