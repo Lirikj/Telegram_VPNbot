@@ -1,19 +1,11 @@
-from config import bot, admin   
+from config import bot   
 from telebot import types
-from baza import get_subscription_statistics, get_all_active_subscriptions, get_expiring_subscriptions
+from baza import get_subscription_statistics, get_all_active_subscriptions, get_expiring_subscriptions, get_all_user_ids
 from datetime import datetime
-from markup import admin_markup
-
-
-def is_admin(user_id):
-    return user_id == admin
+from markup import admin_markup, back_markup
 
 
 def admin_menu(message):
-    if not is_admin(message.from_user.id):
-        bot.send_message(message.chat.id, "❌ У вас нет прав администратора.")
-        return
-
     markup = admin_markup()
     bot.send_message(message.chat.id, "admin menu", reply_markup=markup, parse_mode='Markdown')
 
@@ -39,11 +31,7 @@ def show_statistics(chat_id):
             
             message += f"\n📅 Данные на: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
             
-            # Добавляем кнопку "Назад"
-            markup = types.InlineKeyboardMarkup()
-            back_btn = types.InlineKeyboardButton('🔙 Назад к меню', callback_data='admin_back')
-            markup.add(back_btn)
-            
+            markup = back_markup()
             bot.send_message(chat_id, message, parse_mode='Markdown', reply_markup=markup)
         else:
             bot.send_message(chat_id, "❌ Ошибка получения статистики")
@@ -86,13 +74,10 @@ def show_active_users(chat_id):
                     f"**{i}.** ID: `{user['user_id']}`\n"
                     f"   👤 Username: {username}\n"
                     f"   📋 Подписка: {user['subscription_type']}\n"
-                    f"   ⏰ До: {user['subscription_end']}\n\n"
-                )
+                    f"   ⏰ До: {user['subscription_end']}\n\n")
             
             if page == total_pages - 1:
-                markup = types.InlineKeyboardMarkup()
-                back_btn = types.InlineKeyboardButton('🔙 Назад к меню', callback_data='admin_back')
-                markup.add(back_btn)
+                markup = back_markup()
                 bot.send_message(chat_id, message, parse_mode='Markdown', reply_markup=markup)
             else:
                 bot.send_message(chat_id, message, parse_mode='Markdown')
@@ -107,10 +92,7 @@ def show_expiring_subscriptions(chat_id):
         expiring_subs = get_expiring_subscriptions(7)
         
         if not expiring_subs:
-            markup = types.InlineKeyboardMarkup()
-            back_btn = types.InlineKeyboardButton('🔙 Назад к меню', callback_data='admin_back')
-            markup.add(back_btn)
-            
+            markup = back_markup()
             bot.send_message(chat_id, "✅ Нет подписок, истекающих в ближайшие 7 дней", reply_markup=markup)
             return
         
@@ -138,13 +120,9 @@ def show_expiring_subscriptions(chat_id):
                 f"**{i}.** ID: `{user['user_id']}`\n"
                 f"   👤 Username: {username}\n"
                 f"   📋 Тип: {user['subscription_type']}\n"
-                f"   📅 {days_text}\n\n"
-            )
-        
-        markup = types.InlineKeyboardMarkup()
-        back_btn = types.InlineKeyboardButton('🔙 Назад к меню', callback_data='admin_back')
-        markup.add(back_btn)
-        
+                f"   📅 {days_text}")
+
+        markup = back_markup()
         bot.send_message(chat_id, message, parse_mode='Markdown', reply_markup=markup)
         
     except Exception as e:
@@ -152,27 +130,24 @@ def show_expiring_subscriptions(chat_id):
         print(f"Ошибка при получении истекающих подписок: {e}")
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('admin_'))
+@bot.callback_query_handler(func=lambda call: call.data.startswith('admin_') or call.data in ['message_to_user', 'message_to_all'])
 def admin_callback_handler(call):
-    if not is_admin(call.from_user.id):
-        bot.answer_callback_query(call.id, "❌ У вас нет прав администратора!", show_alert=True)
-        return
-    
     chat_id = call.message.chat.id
     data = call.data
     
     try:
-        bot.delete_message(chat_id, call.message.message_id)
+        # bot.delete_message(chat_id, call.message.message_id)
+        bot.edit_message_text(chat_id, call.message.message_id, text="⏳ Загрузка...", reply_markup=None)
     except:
         pass
     
     if data == 'admin_stats':
         show_statistics(chat_id)
-        bot.answer_callback_query(call.id, "� Статистика загружена")
+        bot.answer_callback_query(call.id, "📊 Статистика загружена")
         
     elif data == 'admin_active_users':
         show_active_users(chat_id)
-        bot.answer_callback_query(call.id, "� Список активных пользователей")
+        bot.answer_callback_query(call.id, "🫂 Список активных пользователей")
         
     elif data == 'admin_expiring':
         show_expiring_subscriptions(chat_id)
@@ -184,10 +159,149 @@ def admin_callback_handler(call):
         bot.send_message(chat_id, "✅ Проверка уведомлений выполнена!")
         bot.answer_callback_query(call.id, "📢 Уведомления проверены")
         
+    elif data == 'admin_cleanup':
+        manual_cleanup_expired_keys(chat_id)
+        bot.answer_callback_query(call.id, "🗑️ Проверка истекших ключей")
+        
+    elif data == 'admin_cleanup_confirm':
+        confirm_cleanup_expired_keys(chat_id)
+        bot.answer_callback_query(call.id, "🔄 Выполняю удаление...")
+        
+    elif data == 'admin_back':
+        admin_menu_message = types.InlineKeyboardMarkup()
+        admin_menu(types.SimpleNamespace(chat=types.SimpleNamespace(id=chat_id)))
+        bot.answer_callback_query(call.id, "🔙 Возврат в админ-панель")
+        
+    elif data == 'message_to_user':
+        bot.send_message(chat_id, "Введите ID пользователя и сообщение через запятую (например: 12345, Привет!)")
+        bot.register_next_step_handler_by_chat_id(chat_id, process_message_to_user)
+        bot.answer_callback_query(call.id)
+        
+    elif data == 'message_to_all':
+        bot.send_message(chat_id, "Введите текст рассылки для всех пользователей:")
+        bot.register_next_step_handler_by_chat_id(chat_id, process_message_to_all)
+        bot.answer_callback_query(call.id)
+        
     elif data == 'admin_back':
         markup = admin_markup()
         bot.send_message(chat_id, 'admin menu', reply_markup=markup, parse_mode='Markdown')
-        bot.answer_callback_query(call.id, "Главное меню")
+
+
+def process_message_to_user(message):
+    try:
+        user_id_str, text = message.text.split(',', 1)
+        target_id = int(user_id_str.strip())
+        bot.send_message(target_id, text.strip())
+        bot.send_message(message.chat.id, f"✅ Сообщение отправлено пользователю {target_id}")
+    except Exception as e:
+        bot.send_message(message.chat.id, "❌ Не удалось отправить. Проверьте формат: ID, сообщение")
+        print(f"Ошибка при отправке личного сообщения: {e}")
+
+
+def process_message_to_all(message):
+    text = message.text.strip()
+    user_ids = get_all_user_ids()
+    sent = 0
+    for uid in user_ids:
+        try:
+            bot.send_message(uid, text)
+            sent += 1
+        except:
+            pass
+    bot.send_message(message.chat.id, f"✅ Рассылка выполнена: {sent} из {len(user_ids)}")
+
+
+def manual_cleanup_expired_keys(chat_id):
+    """Ручное удаление истекших ключей через админ-панель"""
+    try:
+        from notifications import get_expired_users, delete_expired_keys
+        
+        # Показываем информацию о истекших подписках
+        expired_users = get_expired_users(3)
+        
+        if not expired_users:
+            markup = types.InlineKeyboardMarkup()
+            back_btn = types.InlineKeyboardButton('🔙 Назад к меню', callback_data='admin_back')
+            markup.add(back_btn)
+            
+            bot.send_message(chat_id, 
+                "✅ Нет ключей для удаления\n\n"
+                "Истекшие ключи удаляются автоматически через 3 дня после окончания подписки.", 
+                reply_markup=markup)
+            return
+        
+        # Показываем подтверждение удаления
+        message = (
+            f"🗑️ **Удаление истекших ключей**\n\n"
+            f"Найдено **{len(expired_users)}** ключей для удаления:\n\n"
+        )
+        
+        for user_id, username, subscription_end, server in expired_users:
+            message += f"• {username or 'Без username'} (ID: {user_id})\n  Истекла: {subscription_end}, Сервер: {server}\n\n"
+        
+        message += "⚠️ **Внимание**: Это действие нельзя отменить!\n\nПродолжить удаление?"
+        
+        markup = types.InlineKeyboardMarkup()
+        confirm_btn = types.InlineKeyboardButton('✅ Да, удалить', callback_data='admin_cleanup_confirm')
+        cancel_btn = types.InlineKeyboardButton('❌ Отмена', callback_data='admin_back')
+        markup.add(confirm_btn)
+        markup.add(cancel_btn)
+        
+        bot.send_message(chat_id, message, parse_mode='Markdown', reply_markup=markup)
+        
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Ошибка: {str(e)}")
+        print(f"Ошибка при подготовке очистки: {e}")
+
+
+def confirm_cleanup_expired_keys(chat_id):
+    """Подтверждение и выполнение удаления истекших ключей"""
+    try:
+        from notifications import delete_expired_keys, get_expired_users
+        
+        # Получаем количество ключей до удаления
+        expired_users = get_expired_users(3)
+        count_before = len(expired_users)
+        
+        bot.send_message(chat_id, "🔄 Выполняю удаление истекших ключей...")
+        
+        # Выполняем удаление
+        delete_expired_keys()
+        
+        # Проверяем результат
+        expired_users_after = get_expired_users(3)
+        count_after = len(expired_users_after)
+        deleted_count = count_before - count_after
+        
+        markup = types.InlineKeyboardMarkup()
+        back_btn = types.InlineKeyboardButton('🔙 Назад к меню', callback_data='admin_back')
+        markup.add(back_btn)
+        
+        if deleted_count > 0:
+            message = (
+                f"✅ **Удаление завершено**\n\n"
+                f"Удалено ключей: **{deleted_count}**\n"
+                f"Пользователи получили уведомления об удалении.\n"
+                f"Данные подписок очищены из базы данных."
+            )
+        else:
+            message = (
+                f"⚠️ **Удаление не выполнено**\n\n"
+                f"Возможные причины:\n"
+                f"• Ключи уже были удалены ранее\n"
+                f"• Ошибки подключения к серверам\n"
+                f"• Клиенты не найдены на серверах"
+            )
+        
+        bot.send_message(chat_id, message, parse_mode='Markdown', reply_markup=markup)
+        
+    except Exception as e:
+        markup = types.InlineKeyboardMarkup()
+        back_btn = types.InlineKeyboardButton('🔙 Назад к меню', callback_data='admin_back')
+        markup.add(back_btn)
+        
+        bot.send_message(chat_id, f"❌ Ошибка при удалении ключей: {str(e)}", reply_markup=markup)
+        print(f"Ошибка при удалении ключей: {e}")
 
 
 

@@ -2,6 +2,8 @@ import sqlite3
 from datetime import datetime, timedelta
 
 
+user_choice = {}
+
 
 def users_db():
     try:
@@ -14,6 +16,9 @@ def users_db():
                 username TEXT,
                 first_name TEXT,
                 last_name TEXT,
+                premium INTEGER DEFAULT 0,
+                email TEXT,
+                server TEXT,                        
                 subscription_type TEXT,
                 subscription_start DATE,
                 subscription_end DATE,
@@ -21,6 +26,12 @@ def users_db():
                 key TEXT
             )
         ''')
+        
+        c.execute("PRAGMA table_info(users)")
+        columns = [column[1] for column in c.fetchall()]
+        
+        if 'server' not in columns:
+            c.execute('ALTER TABLE users ADD COLUMN server TEXT')
 
         conn.commit()
     except sqlite3.Error as e:
@@ -29,20 +40,21 @@ def users_db():
         if conn:
             conn.close()
 
-def save_user_data(user):
+def save_user_data(user, premium=0):
     try:
         conn = sqlite3.connect('usersVPN.db')
         c = conn.cursor()
         c.execute("""
             INSERT OR IGNORE INTO users (
-                user_id, username, first_name, last_name, registration_date
-            ) VALUES (?, ?, ?, ?, ?)
+                user_id, username, first_name, last_name, registration_date, premium
+            ) VALUES (?, ?, ?, ?, ?, ?)
         """, (
             user.id,
             user.username,
             user.first_name,
             user.last_name,
-            datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            premium
         ))
         conn.commit()
     except sqlite3.Error as e:
@@ -50,6 +62,22 @@ def save_user_data(user):
     finally:
         if conn:
             conn.close()
+
+
+def check_premium_status(user_id):
+    try:
+        with sqlite3.connect('usersVPN.db') as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT premium FROM users WHERE user_id = ?', (user_id,))
+            result = cursor.fetchone()
+            
+            if result and result[0] is not None:
+                return bool(result[0])
+            return False
+            
+    except sqlite3.Error as e:
+        print(f"Ошибка при проверке премиум статуса: {e}")
+        return False
 
 
 def user_exists(user_id):
@@ -63,14 +91,15 @@ def user_exists(user_id):
         return False
 
 
-def add_subscription(user_id, subscription_type, vpn_key=None):
-    if subscription_type not in ['1 месяц', '3 месяца', '6 месяцев']:
+def add_subscription(user_id, subscription_type, vpn_key=None, server_name=None):
+    if subscription_type not in ['1 месяц', '3 месяца', '6 месяцев', '12 месяцев']:
         raise ValueError("Неверный тип подписки")
 
     days_mapping = {
         '1 месяц': 30,
         '3 месяца': 90, 
-        '6 месяцев': 180
+        '6 месяцев': 180,
+        '12 месяцев': 365
     }
     duration_days = days_mapping[subscription_type]
 
@@ -90,19 +119,18 @@ def add_subscription(user_id, subscription_type, vpn_key=None):
                     SET subscription_type = ?, 
                         subscription_start = ?, 
                         subscription_end = ?,
-                        key = ?
+                        key = ?,
+                        server = ?
                     WHERE user_id = ?
-                ''', (subscription_type, start_date, end_date, vpn_key, user_id))
-                print(f"Подписка пользователя {user_id} обновлена")
+                ''', (subscription_type, start_date, end_date, vpn_key, server_name, user_id))
             else:
                 cursor.execute('''
                     INSERT INTO users (
                         user_id, subscription_type, subscription_start, 
-                        subscription_end, registration_date, key
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        subscription_end, registration_date, key, server
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 ''', (user_id, subscription_type, start_date, end_date, 
-                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'), vpn_key))
-                print(f"Создана подписка для нового пользователя {user_id}")
+                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'), vpn_key, server_name))
                 
             conn.commit()
             return True
@@ -118,8 +146,8 @@ def get_user_subscription(user_id):
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT user_id, username, first_name, last_name, 
-                       subscription_type, subscription_start, subscription_end, 
-                       registration_date, key
+                    subscription_type, subscription_start, subscription_end, 
+                    registration_date, key, server
                 FROM users WHERE user_id = ?
             ''', (user_id,))
             
@@ -134,7 +162,8 @@ def get_user_subscription(user_id):
                     'subscription_start': result[5],
                     'subscription_end': result[6],
                     'registration_date': result[7],
-                    'key': result[8]
+                    'key': result[8],
+                    'server': result[9]
                 }
             return None
             
@@ -212,65 +241,48 @@ def extend_subscription(user_id, additional_days):
 
 
 def extend_subscription_with_server_update(user_id, subscription_type):
-    from generation_key import extend_user_subscription
-    
-    days_mapping = {
-        '1 месяц': 30,
-        '3 месяца': 90, 
-        '6 месяцев': 180
-    }
-    
-    if subscription_type not in days_mapping:
-        print(f"Неверный тип подписки: {subscription_type}")
-        return False
-    
-    additional_days = days_mapping[subscription_type]
+    days_map = {'1 месяц': 30, '3 месяца': 90, '6 месяцев': 180, '12 месяцев': 365}
+    additional_days = days_map.get(subscription_type, 30)
     
     try:
         with sqlite3.connect('usersVPN.db') as conn:
             cursor = conn.cursor()
             
-            cursor.execute('SELECT subscription_end, subscription_type FROM users WHERE user_id = ?', (user_id,))
+            # Получаем информацию о пользователе
+            cursor.execute('SELECT subscription_end, username, server FROM users WHERE user_id = ?', (user_id,))
             result = cursor.fetchone()
             
-            if not result:
-                print(f"Пользователь {user_id} не найден в базе данных")
-                return False
+            if not result or not result[0]:
+                return False, None
                 
-            current_end_date_str, current_sub_type = result
+            current_end_date, username, server = result
             
-            if current_end_date_str:
-                current_end_date = datetime.strptime(current_end_date_str, '%Y-%m-%d').date()
-                today = datetime.now().date()
-                
-                if current_end_date >= today:
-                    new_end_date = current_end_date + timedelta(days=additional_days)
-                else:
-                    new_end_date = today + timedelta(days=additional_days)
-            else:
-                new_end_date = datetime.now().date() + timedelta(days=additional_days)
+            # Определяем сервер, если он не указан в БД
+            if not server:
+                server = '🇩🇪 Германия'  # По умолчанию
             
-            server_update_success = extend_user_subscription(user_id, additional_days)
+            # Продлеваем ключ на сервере
+            from generation_key import extend_key
+            server_success = extend_key(user_id, username, server, additional_days)
             
-            if server_update_success:
-                cursor.execute('''
-                    UPDATE users 
-                    SET subscription_end = ?, subscription_type = ?
-                    WHERE user_id = ?
-                ''', (new_end_date, subscription_type, user_id))
-                
-                conn.commit()
-                print(f"Подписка пользователя {user_id} продлена до {new_end_date} (тип: {subscription_type})")
-                return True, new_end_date
-            else:
-                print(f"Ошибка при обновлении подписки на сервере для пользователя {user_id}")
+            if not server_success:
                 return False, None
             
+            # Обновляем дату в базе данных
+            current_end_date_obj = datetime.strptime(current_end_date, '%Y-%m-%d').date()
+            new_end_date = current_end_date_obj + timedelta(days=additional_days)
+            
+            cursor.execute(
+                "UPDATE users SET subscription_end = ? WHERE user_id = ?",
+                (new_end_date.strftime('%Y-%m-%d'), user_id)
+            )
+            conn.commit()
+            
+            return True, new_end_date
+            
     except sqlite3.Error as e:
-        print(f"Ошибка при продлении подписки в базе данных: {e}")
         return False, None
     except Exception as e:
-        print(f"Общая ошибка при продлении подписки: {e}")
         return False, None
 
 
@@ -487,3 +499,67 @@ def backup_database(backup_path="backup_usersVPN.db"):
     except Exception as e:
         print(f"Ошибка при создании резервной копии: {e}")
         return False
+
+
+def get_all_user_ids():
+    try:
+        with sqlite3.connect('usersVPN.db') as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT user_id FROM users")
+            return [row[0] for row in cur.fetchall()]
+    except sqlite3.Error as e:
+        print(f"Ошибка при получении всех пользователей: {e}")
+        return []
+
+
+def clear_user_subscription(user_id):
+    """
+    Очистка данных подписки пользователя после удаления ключа
+    """
+    try:
+        with sqlite3.connect('usersVPN.db') as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                UPDATE users 
+                SET subscription_type = NULL,
+                    subscription_start = NULL,
+                    subscription_end = NULL,
+                    server = NULL,
+                    key = NULL
+                WHERE user_id = ?
+            """, (user_id,))
+            
+            conn.commit()
+            return True
+            
+    except sqlite3.Error as e:
+        print(f"Ошибка при очистке подписки пользователя {user_id}: {e}")
+        return False
+    
+
+def get_server_connections():
+    try:
+        with sqlite3.connect('usersVPN.db') as conn:
+            cursor = conn.cursor()
+            today = datetime.now().date()
+            
+            cursor.execute('''
+                SELECT COUNT(*) FROM users 
+                WHERE server = ? AND subscription_end >= ? AND subscription_end IS NOT NULL
+            ''', ('🇫🇮 Финляндия', today))
+            
+            finland_count = cursor.fetchone()[0]
+            
+            cursor.execute('''
+                SELECT COUNT(*) FROM users 
+                WHERE server = ? AND subscription_end >= ? AND subscription_end IS NOT NULL
+            ''', ('🇩🇪 Германия', today))
+            
+            germany_count = cursor.fetchone()[0]
+            
+            return finland_count, germany_count
+            
+    except sqlite3.Error as e:
+        print(f"Ошибка при получении статистики серверов: {e}")
+        return 0, 0

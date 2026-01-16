@@ -8,9 +8,10 @@ from pay import SUBSCRIPTION_OPTIONS
 from markup import menu_markup
 
 RENEWAL_OPTIONS = {
-    '1 месяц': 100,    
-    '3 месяца': 300,  
-    '6 месяцев': 600
+    '1 месяц': 90,    
+    '3 месяца': 270,
+    '6 месяцев': 450,
+    '12 месяцев': 900
 }
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('renew_'))
@@ -68,19 +69,17 @@ def handle_renewal_payment(message):
                             f"📋 Тип продления: {subscription_type}\n"
                             f"⏰ Новая дата окончания: {new_end_date}\n"
                             f"🔑 Ваш VPN ключ остался тем же:\n"
-                            f"`{user_data['key']}`\n\n"
+                            f"<code>{user_data['key']}</code>\n\n"
                             f"💰 Сумма: {message.successful_payment.total_amount} {message.successful_payment.currency}\n\n"
                             f"Подписка автоматически обновлена на сервере!",
-                            parse_mode='Markdown',
+                            parse_mode='HTML',
                             reply_markup=markup)
         else:
             bot.send_message(message.chat.id,
                             f"✅ Подписка продлена до {new_end_date}, но возникла проблема с получением ключа. "
                             f"Обратитесь в поддержку.")
     else:
-        bot.send_message(message.chat.id,
-                        "❌ Произошла ошибка при продлении подписки. "
-                        "Деньги будут возвращены. Обратитесь в поддержку.")
+        bot.send_message(message.chat.id,"❌ Произошла ошибка при продлении подписки. Обратитесь в поддержку.")
 
 
 def create_renewal_keyboard():
